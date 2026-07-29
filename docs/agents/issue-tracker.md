@@ -30,3 +30,40 @@ Create a GitHub issue.
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
+
+## Wayfinding operations
+
+GitHub (via recent `gh`) supports **native issue blocking** and **sub-issue
+parents**, so the wayfinder map/children/blocking/frontier use the native
+relationships — no body-convention fallback.
+
+- **Map**: one issue labelled `wayfinder:map`. Its body carries Destination /
+  Notes / Decisions-so-far / Not-yet-specified / Out-of-scope.
+- **Child ticket**: an issue labelled `wayfinder:<type>` (`research` /
+  `prototype` / `grilling` / `task`) **and** tied to the map via
+  `--parent <map-num>`. Child tickets are *not* listed in the map body while
+  open — they are found by query. The issue number is the ticket's identity;
+  refer to it by its title in human-readable prose, with the `#NN` link riding
+  inside the name.
+- **Blocking**: the native `gh issue create --blocked-by <num,...>` /
+  `gh issue edit <n> --add-blocked-by <num>` relationship. A ticket is
+  unblocked when every issue blocking it is **closed**. GitHub renders these
+  edges visually in the issue UI, so the human sees the takeable frontier
+  without opening the map.
+- **Frontier**: list open wayfinder tickets with
+  `gh issue list --state open --label "wayfinder:research,wayfinder:prototype,wayfinder:grilling,wayfinder:task" --limit 200 --json number,title,assignees,blockedBy`,
+  then keep issues whose `blockedBy` array is fully closed (each blocker's
+  `gh issue view <n> --json state -q .state` returns `CLOSED`) and whose
+  `assignees` is empty. First by number wins.
+- **Claim**: assign the issue to the driving account before any work
+  (`gh issue edit <n> --add-assignee @me`). The assignee *is* the claim; an
+  open, unassigned ticket is unclaimed.
+- **Resolve**: post the answer as a resolution **comment** (`gh issue comment`),
+  **close** the issue with a one-line summary (`gh issue close <n> --comment "..."`),
+  and **append a context pointer** to the map's Decisions-so-far via
+  `gh issue edit <map-num> --body <updated>`.
+- **Scope ruling**: if a ticket sits beyond the destination, **close it** and
+  leave one line in the map's `## Out of scope` section linking the closed issue.
+- **Fog graduation**: when a Not-yet-specified patch becomes specifiable, create
+  the new child issue (`--parent <map-num> --label wayfinder:<type>`) and clear
+  that patch from the map body.

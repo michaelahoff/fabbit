@@ -215,3 +215,41 @@ _Avoid_: "stdout mode", "interactive mode", "CLI mode" (ambiguous with the CLI i
 **Agent stream event**:
 A single item in the **agent**'s output stream -- either a `text` chunk or a `toolCall` -- surfaced to the caller of `run()` so the stream can be forwarded to an external observability system. Available only in **log-to-file mode** via the `onAgentStreamEvent` callback on the `logging` option. Each event carries its `iteration` number and a `timestamp`.
 _Avoid_: "log event" (the log file contains more than just agent output), "display entry" (internal UI type)
+
+## Fabbit
+
+Fabbit is the orchestration layer built fork-and-extend atop Sandcastle. The DAG model, engine, node-type registry, and code-trigger feedback loops are Fabbit's; the sandbox providers, harness wrappers, and **agent session** lifecycle are Sandcastle's (the substrate). Reuse-first: extend, don't rebuild.
+
+**Flow**:
+A serializable DAG (nodes + edges with port bindings) that Fabbit executes -- the unit of composition. The product of the builder API and the input to the engine. An instance of the canonical DAG JSON schema.
+_Avoid_: "run" (a **flow run** is its execution, not the flow itself), "pipeline", "workflow"
+
+**Flow run**:
+One execution of a **flow** -- the thing a `runs/<id>/` directory holds, the thing the engine produces as a **FlowRunResult**. Distinct from Sandcastle's **iteration** (one agent invocation inside a sandbox) and Sandcastle's `run()` function.
+_Avoid_: "run" used as a noun (ambiguous with Sandcastle's `run()`), "execution", "flow execution"
+
+**FlowRunResult**:
+The result the engine returns for one **flow run** -- per-node outcomes plus flow-level status. Distinct from Sandcastle's `RunResult` (the result of one agent **iteration**).
+_Avoid_: "RunResult" (Sandcastle's, agent-level), "result"
+
+**Path**:
+An execution lane opened by a **routing node** -- e.g. a **gate**'s on-success vs on-failure route. Scoped by a **pathId**.
+_Avoid_: "branch" (overloaded with git **branches** -- a Sandcastle/source-branch concept), "route", "lane"
+
+**PathId**:
+The identifier of a **path**. Stamped onto streamed chunks (correlation) and used to scope aborts within a **flow run**.
+_Avoid_: "branchId" (collides with git **branch**), "routeId", "laneId"
+
+**Node class**:
+The structural role a **node** plays in edge fan, independent of what its runner does (determinism, IO vs pure compute). Three classes, distinguished by in-degree/out-degree and how outputs select. The class is structural, encoded as a discriminated union in the schema; runner-implementation concerns (pure function, agent-driven, deterministic) belong on the runner, not the class.
+- **action** -- exactly one input, exactly one output.
+- **branch** -- exactly one input, N outputs, exactly one output fires per invocation (the runner selects a downstream).
+- **merge** -- N inputs (a required `join`), exactly one output. Owns fan-in.
+_Avoid_: subdividing by determinism ("logic node", "transform node") -- pure computation is an action whose runner happens to be deterministic; "scatter node" -- fan-out is an action feeding a branch, not its own class; "routing" as a single class -- the gate-vs-merge distinction is structural, one selects and the other combines.
+
+**Feedback edge**:
+An explicit **edge** marked `kind: "feedback"` -- a re-entry from a downstream **node** back to an upstream one (e.g. a **gate**'s on-failure output back to the **agent** node it gates). Carries a runner-produced **resume token** so the engine resumes the upstream rather than re-invoking it cold. The engine bounds iteration per feedback edge (max-loops / progress check); the graph is *not* infinitely recursive. Makes explicit where the loops in a **flow** live; without it the graph is acyclic.
+_Avoid_: silent back-edges (a plain edge going upstream, with cyclic semantics left to convention), conflating feedback selection with **branch**'s forward selection
+
+**Flow (revised)**:
+A serializable **flow** (nodes + edges with port bindings) that Fabbit executes -- strictly acyclic in its *forward* edges, with any loops carried as explicit **feedback edges**. "DAG" is loose vocabulary for the forward skeleton; the strict term for what the engine walks is **flow**, since feedback makes it not strictly acyclic.
