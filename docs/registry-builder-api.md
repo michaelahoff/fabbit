@@ -11,19 +11,37 @@ The runner carries its own contract metadata as static properties, alongside its
 ```ts
 import type { StandardSchema } from "@standard-schema/spec";
 
-interface NodeRunner {
+interface NodeRunner<P = unknown> {
   kind: string; // namespaced ("@fabbit/code") or bare builtin ("code")
   version: string; // node-kind contract semver
   cls: "action" | "branch" | "merge"; // structural class; pinned by the helper, not a free assertion
   outputPorts: Record<string, string[]>; // port -> field names (invariant #10, binding upstreamField check)
   inputFields: string[]; // the node's input shape (identity-wiring validation, invariant #11)
-  paramSchema: StandardSchema; // validates node.params; its output type is the builder's param type
-  run: NodeRunFn; // execution — signature typed by ticket 04 (engine)
+  paramSchema: StandardSchema; // validates node.params; its output type is the builder's param type AND the runner's ctx.params type (P)
+  run: NodeRunFn<P>; // execution — typed by 04 (engine); P (paramSchema output) threads onto ctx.params
   join?: "all" | "race"; // present iff cls: "merge" (kind-level, not node-level)
 }
 
-// Placeholder — ticket 04 (engine) refines the run signature.
-type NodeRunFn = (input: unknown, ctx: unknown) => Promise<unknown>;
+// Typed by 04 (engine); see docs/engine.md. `P` is this runner's paramSchema output
+// type — inferred by the defineXRunner helper from `paramSchema` and threaded onto
+// `ctx.params` (RunCtx<P>). The engine supplies the validated `node.params`, erased
+// at the engine boundary; the runner's typed view is a boundary assertion (same
+// mechanism `input` uses — engine passes Record<string,unknown>, runner sees
+// Record<inputFields[number],unknown>). Refined by ticket 08: `params` rides ctx,
+// fully typed as P (one primary data arg `input`; all secondary in-channels ride ctx).
+type ActionRunFn<P = unknown> = (
+  input: Record<inputFields[number], unknown>,
+  ctx: RunCtx<P>,
+) => Promise<NodeRunResult>;
+type BranchRunFn<P = unknown> = (
+  input: Record<inputFields[number], unknown>,
+  ctx: RunCtx<P>,
+) => Promise<NodeRunResult>;
+type MergeRunFn<P = unknown> = (
+  inputs: Record<inputFields[number], unknown>[],
+  ctx: RunCtx<P>,
+) => Promise<NodeRunResult>;
+type NodeRunFn<P = unknown> = ActionRunFn<P> | BranchRunFn<P> | MergeRunFn<P>;
 ```
 
 The param type the builder type-checks against is extracted from any Standard Schema validator via `paramSchema["~standard"]["types"]["output"]` (Zod, Valibot, etc. — the codebase uses Zod).
@@ -226,7 +244,7 @@ Serializes to the canonical MVP instance from [dag-schema.md](./dag-schema.md) (
 
 ## Deferred
 
-- **`NodeRunner.run` signature** — typed by ticket 04 (engine). The `defineXRunner` helpers take `run` as a placeholder slot.
+- ~~**`NodeRunner.run` signature** — typed by ticket 04 (engine). The `defineXRunner` helpers take `run` as a placeholder slot.~~ **Resolved by 04 + 08:** `run` is `NodeRunFn<P>` (action: `(input, ctx: RunCtx<P>) => NodeRunResult`; branch: same; merge: `(inputs[], ctx: RunCtx<P>)`); `P` is the `paramSchema` output type, inferred by the helpers and threaded onto `ctx.params`. See `docs/engine.md`.
 - **Compile-time binding field-name checking** (identity wiring, invariant #11) — runtime-validated at serialize for now; compile-time checking is a later refinement.
 - **Registry as Effect service vs plain object** — the `Registry` interface is runtime-neutral; ticket 04 decides the engine's runtime model and whether to wrap it.
 

@@ -248,12 +248,24 @@ The structural role a **node** plays in edge fan, independent of what its runner
 - **merge** -- N inputs (a join), exactly one output. Owns fan-in. The join policy (`all` / `race`) is kind-level -- it lives on the **registry entry**, not the node record.
   _Avoid_: subdividing by determinism ("logic node", "transform node") -- pure computation is an action whose runner happens to be deterministic; "scatter node" -- a fourth structural class (one input, ALL N outputs fire), deferred to fog alongside merge; the prior dismissal ("fan-out is an action feeding a branch") was wrong -- an action has exactly one output edge and a branch selects one, so neither can fan out to all; "routing" as a single class -- the gate-vs-merge distinction is structural, one selects and the other combines.
 
+**Node record**:
+A vertex in a **flow**'s `graph.nodes` -- the persistent, serializable instance. Carries a stable `id`, `name`, `kind`+`version` (which resolve to a **registry entry** at engine load), `cls` (validated against the entry), and `params` (validated by the entry's `paramSchema`). The thing edges reference by id; the thing a `runs/<id>/flow.json` snapshot pins for a run's lifetime. Transport-layer only -- `params` is `unknown` at this layer; the typed view is the **registry entry**'s `P`.
+_Avoid_: "node" used loosely (a node _record_ vs the node _class_ vs the runner -- the record is the data), "node definition" (overloaded with the registry entry)
+
+**input**:
+The **primary** in-channel of a **node**'s `NodeRunner.run` -- per-**invocation** data the runner transforms or branches on, supplied by the engine from the upstream **edge**'s binding. Carried as the distinct first arg of the run signature. Keys typed from the entry's `inputFields` (a name list); values `unknown` (a full `inputSchema` slot was a deliberate shallowness cut -- the flow-data channels stay name-lists, value types deferred to fog). Changes every run and every feedback re-entry.
+_Avoid_: "params" (a distinct, secondary in-channel -- see below), "request", "payload" (collides with a port's `output`)
+
+**params**:
+A **secondary** in-channel of a **node** -- per-**node-instance** _static config_, set at **flow**-build time on the **node record**, validated by the entry's `paramSchema`, static across re-entries. Rides `RunCtx` (as `ctx.params`), not a distinct arg -- the dispatch contract carries exactly one primary channel as a distinct arg (`input`); every secondary in-channel rides `ctx` (`params`, `resumeInput`). Fully typed as `P` (the `paramSchema` output type) via the generic `RunCtx<P>` -- the most strongly-typed thing the runner sees, because `paramSchema` is a full schema slot (unlike `inputFields`, a name list). Each channel is typed as far as its own contract slot reaches. The MVP `gate` reads `params.on`; a `code` node reads `params.cmd`.
+_Avoid_: "input" (the primary, per-invocation channel), "config" (too generic), "arguments" (overloaded with prompt args)
+
 **Registry entry**:
 The typed/behavioral contract that a **node**'s `kind`+`version` resolves to at engine load -- the counterpart the transport **flow** schema deliberately leaves untyped ("DAG is data, not code"). Owns `cls` (validated against the node), `outputPorts` (port -> field names), `inputFields` (the node's input shape, for identity-wiring validation), `paramSchema` (validates `node.params`), `runner` (opaque, typed by the engine ticket), and `join` (present iff `cls: "merge"`). The builder API and engine both code against it.
 _Avoid_: "node definition" (overloaded with the node record), "kind descriptor", "node type" (overloaded with `cls`)
 
 **NodeRunner**:
-The self-describing object a node-type author writes and registers into the registry. Carries its contract metadata (`kind`, `version`, `cls`, `outputPorts`, `inputFields`, `paramSchema`, `join?`) as static properties alongside its `run` logic. _Is_ the registry entry -- `RegistryEntry` from the schema is the TS interface it implements, not a separate runtime wrapper. The engine dispatches to its `run`; the builder reads its metadata for type-safety. Created via one of three class-pinned helpers (`defineActionRunner` / `defineBranchRunner` / `defineMergeRunner`).
+The self-describing object a node-type author writes and registers into the registry. Carries its contract metadata (`kind`, `version`, `cls`, `outputPorts`, `inputFields`, `paramSchema`, `join?`) as static properties alongside its `run` logic. _Is_ the registry entry -- `RegistryEntry` from the schema is the TS interface it implements, not a separate runtime wrapper. The engine dispatches to its `run`; the builder reads its metadata for type-safety. Created via one of three class-pinned helpers (`defineActionRunner` / `defineBranchRunner` / `defineMergeRunner`). The helpers infer `P` from `paramSchema` and thread it onto `ctx.params: P`.
 _Avoid_: "node handler" (overloaded with the builder's node handle), "runner impl", "node adapter"
 
 **Feedback edge**:
@@ -280,7 +292,7 @@ The result the engine returns for one **flow run** -- per-node outcomes plus flo
 _Avoid_: "RunResult" (Sandcastle's, agent-level), "result"
 
 **RunCtx**:
-The context object the engine threads into each `NodeRunner.run`. Carries `nodeId`/`pathId` (identity), `sandbox` (a **SandboxProvider** for config, NOT a live handle -- the runner calls `sandcastle.run`), `env`, `secrets` (provisioned for THIS node's declared capabilities only), `log`, `stream` (the engine stamps `nodeId`/`pathId` before forwarding), `signal` (a composite AbortSignal -- runners MUST forward into `sandcastle.run({signal})`/`exec({signal})`), optional `resumeToken`/`resumeInput` (present iff this invocation is a resume), optional `setResumeToken` (non-idempotent runners persist a token mid-run for crash-resume), and fogged `parent`/`scope` (compound sub-flow, shape TBD).
+The context object the engine threads into each `NodeRunner.run`. Carries `nodeId`/`pathId` (identity), `params` (the node's per-instance static **params**, typed as `P` via the generic `RunCtx<P = unknown>`), `sandbox` (a **SandboxProvider** for config, NOT a live handle -- the runner calls `sandcastle.run`), `env`, `secrets` (provisioned for THIS node's declared capabilities only), `log`, `stream` (the engine stamps `nodeId`/`pathId` before forwarding), `signal` (a composite AbortSignal -- runners MUST forward into `sandcastle.run({signal})`/`exec({signal})`), optional `resumeToken`/`resumeInput` (present iff this invocation is a resume), optional `setResumeToken` (non-idempotent runners persist a token mid-run for crash-resume), and fogged `parent`/`scope` (compound sub-flow, shape TBD). The runner's typed view is a boundary assertion at the dispatch seam (same mechanism `input` already uses).
 _Avoid_: "execution context" (overloaded), "run context" (collides with "a flow run")
 
 **NodeRunResult**:
