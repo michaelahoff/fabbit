@@ -57,10 +57,12 @@ export type StreamChunk = {
 export type RunCtx = {
   nodeId: string;
   pathId: string;
-  // PROTOTYPE GAP: the spec's NodeRunFn is (input, ctx) with no params path,
-  // but a per-node-instance runner (gate's `on`) needs its validated params at
-  // runtime. Real contract must add params here or bake them into the node
-  // record the engine hands the runner. See ticket #5 resolution.
+  // RESOLVED (ticket #9): params rides ctx as the secondary in-channel
+  // (per-instance static config); the real contract types this as
+  // RunCtx<P = unknown> with ctx.params: P (the paramSchema output type).
+  // The throwaway prototype keeps Record<string, unknown> here -- no
+  // Standard Schema inference in this branch; the typed view lands in the
+  // real engine module, not here.
   params: Record<string, unknown>;
   sandbox?: unknown;
   env: Record<string, string>;
