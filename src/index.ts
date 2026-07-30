@@ -98,3 +98,14 @@ export type {
   MergeToHeadBranchStrategy,
   NamedBranchStrategy,
 } from "./SandboxProvider.js";
+
+// Fabbit engine — persistence seam + concrete runs/ filesystem adapter.
+export { FsRunStore } from "./engine/fs-run-store.js";
+export type {
+  RunStore,
+  NodeStatus,
+  FlowStatus,
+  NodeRecord,
+  RunSnapshot,
+  RunSummary,
+} from "./engine/run-store.js";
