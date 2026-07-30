@@ -242,18 +242,63 @@ _Avoid_: "branchId" (collides with git **branch**), "routeId", "laneId"
 
 **Node class**:
 The structural role a **node** plays in edge fan, independent of what its runner does (determinism, IO vs pure compute). Three classes, distinguished by in-degree/out-degree and how outputs select. The class is structural, encoded as a discriminated union in the schema; runner-implementation concerns (pure function, agent-driven, deterministic) belong on the runner, not the class.
+
 - **action** -- exactly one input, exactly one output.
 - **branch** -- exactly one input, N outputs, exactly one output fires per invocation (the runner selects a downstream).
 - **merge** -- N inputs (a join), exactly one output. Owns fan-in. The join policy (`all` / `race`) is kind-level -- it lives on the **registry entry**, not the node record.
-_Avoid_: subdividing by determinism ("logic node", "transform node") -- pure computation is an action whose runner happens to be deterministic; "scatter node" -- a fourth structural class (one input, ALL N outputs fire), deferred to fog alongside merge; the prior dismissal ("fan-out is an action feeding a branch") was wrong -- an action has exactly one output edge and a branch selects one, so neither can fan out to all; "routing" as a single class -- the gate-vs-merge distinction is structural, one selects and the other combines.
+  _Avoid_: subdividing by determinism ("logic node", "transform node") -- pure computation is an action whose runner happens to be deterministic; "scatter node" -- a fourth structural class (one input, ALL N outputs fire), deferred to fog alongside merge; the prior dismissal ("fan-out is an action feeding a branch") was wrong -- an action has exactly one output edge and a branch selects one, so neither can fan out to all; "routing" as a single class -- the gate-vs-merge distinction is structural, one selects and the other combines.
 
 **Registry entry**:
 The typed/behavioral contract that a **node**'s `kind`+`version` resolves to at engine load -- the counterpart the transport **flow** schema deliberately leaves untyped ("DAG is data, not code"). Owns `cls` (validated against the node), `outputPorts` (port -> field names), `inputFields` (the node's input shape, for identity-wiring validation), `paramSchema` (validates `node.params`), `runner` (opaque, typed by the engine ticket), and `join` (present iff `cls: "merge"`). The builder API and engine both code against it.
 _Avoid_: "node definition" (overloaded with the node record), "kind descriptor", "node type" (overloaded with `cls`)
 
+**NodeRunner**:
+The self-describing object a node-type author writes and registers into the registry. Carries its contract metadata (`kind`, `version`, `cls`, `outputPorts`, `inputFields`, `paramSchema`, `join?`) as static properties alongside its `run` logic. _Is_ the registry entry -- `RegistryEntry` from the schema is the TS interface it implements, not a separate runtime wrapper. The engine dispatches to its `run`; the builder reads its metadata for type-safety. Created via one of three class-pinned helpers (`defineActionRunner` / `defineBranchRunner` / `defineMergeRunner`).
+_Avoid_: "node handler" (overloaded with the builder's node handle), "runner impl", "node adapter"
+
 **Feedback edge**:
-An explicit **edge** marked `kind: "feedback"` -- a re-entry from a downstream **node** back to an upstream one (e.g. a **gate**'s on-failure output back to the **agent** node it gates). Carries a runner-produced **resume token** so the engine resumes the upstream rather than re-invoking it cold. The engine bounds iteration per feedback edge (max-loops / progress check); the graph is *not* infinitely recursive. Makes explicit where the loops in a **flow** live; without it the graph is acyclic.
+An explicit **edge** marked `kind: "feedback"` -- a re-entry from a downstream **node** back to an upstream one (e.g. a **gate**'s on-failure output back to the **agent** node it gates). Carries a runner-produced **resume token** so the engine resumes the upstream rather than re-invoking it cold. The engine bounds iteration per feedback edge (max-loops / progress check); the graph is _not_ infinitely recursive. Makes explicit where the loops in a **flow** live; without it the graph is acyclic.
 _Avoid_: silent back-edges (a plain edge going upstream, with cyclic semantics left to convention), conflating feedback selection with **branch**'s forward selection
 
 **Flow (revised)**:
-A serializable **flow** (nodes + edges with port bindings) that Fabbit executes -- strictly acyclic in its *forward* edges, with any loops carried as explicit **feedback edges**. "DAG" is loose vocabulary for the forward skeleton; the strict term for what the engine walks is **flow**, since feedback makes it not strictly acyclic.
+A serializable **flow** (nodes + edges with port bindings) that Fabbit executes -- strictly acyclic in its _forward_ edges, with any loops carried as explicit **feedback edges**. "DAG" is loose vocabulary for the forward skeleton; the strict term for what the engine walks is **flow**, since feedback makes it not strictly acyclic.
+
+**Flow builder**:
+The fluent TS API that serializes to canonical **flow** JSON. Typed from a static registry declaration (`flow(reg)`); `f.node(kind, params)` returns a class-typed **node handle** that wires edges (`ActionHandle.to` / `BranchHandle.on(port).to` / `.dangle` / `MergeHandle.to`); `f.serialize()` emits a guaranteed-valid **flow**. A serializer -- it produces the DAG schema, does not reinvent the model. The visual editor later emits the same **flow** JSON directly.
+_Avoid_: "flow DSL" (overloaded), "graph builder", "DAG builder" ("DAG" is loose vocab -- **flow** is the strict term)
+
+**Node handle**:
+The class-typed reference returned by `flowBuilder.node(kind, params)`, carrying the **node**'s ports for edge wiring. The edge seam: `ActionHandle` (implicit single `out` port), `BranchHandle` (named output ports, compile-time checked), `MergeHandle` (implicit `out`, accepts multiple incoming). Enforces single-input on action/branch at build time.
+_Avoid_: "node ref", "node pointer", "node proxy"
+
+**Engine**:
+The runtime that walks a canonical **flow**, dispatches each node to its `NodeRunner`, threads `RunCtx` through, persists transitions to `RunStore`, and crash-resumes. One engine, invoked by both the programmatic API and the CLI. A scheduler + state machine + persistence layer -- it does NOT manage sandbox lifecycle (that's Sandcastle's job: the `opencode` node delegates to `sandcastle.run({ sandbox: ctx.sandbox, ... })`). Three methods: `run` (start), `resume` (re-enter a paused run), `recover` (crash-resume scan at startup).
+_Avoid_: "executor", "runtime" (overloaded with sandbox runtime), "orchestrator" (Sandcastle's term for the agent-iteration loop)
+
+**FlowRunResult**:
+The result the engine returns for one **flow run** -- per-node outcomes plus flow-level status (`complete` / `paused` / `aborted` / `failed`). `failed` is flow-level ONLY -- a **gate** selecting on-failure is data (the flow continues via a feedback edge), not failure. `nodes` is a flattened list (each carrying `pathId`); a `paths[]` dimension is a later view/derivation, not a distinct store.
+_Avoid_: "RunResult" (Sandcastle's, agent-level), "result"
+
+**RunCtx**:
+The context object the engine threads into each `NodeRunner.run`. Carries `nodeId`/`pathId` (identity), `sandbox` (a **SandboxProvider** for config, NOT a live handle -- the runner calls `sandcastle.run`), `env`, `secrets` (provisioned for THIS node's declared capabilities only), `log`, `stream` (the engine stamps `nodeId`/`pathId` before forwarding), `signal` (a composite AbortSignal -- runners MUST forward into `sandcastle.run({signal})`/`exec({signal})`), optional `resumeToken`/`resumeInput` (present iff this invocation is a resume), optional `setResumeToken` (non-idempotent runners persist a token mid-run for crash-resume), and fogged `parent`/`scope` (compound sub-flow, shape TBD).
+_Avoid_: "execution context" (overloaded), "run context" (collides with "a flow run")
+
+**NodeRunResult**:
+What a `NodeRunner.run` returns. Uniform across all three node classes (one `port` + `output` on `complete`; `pauseKind` + `payload` on `paused`). `port` is the single dispatch discriminant -- action→`"out"`, branch→the selected port, merge→`"out"`; the engine reads it to find the outgoing edges to fire. `resumeToken` (optional on both variants) lets a non-idempotent node be resumed rather than re-invoked cold. No `status: "failed"` (flow-level failure is data a gate routes on) or `status: "aborted"` (abort is a thrown `AbortReason`).
+_Avoid_: "runner output" (collides with the port's `output` payload), "node response"
+
+**PauseKind**:
+The discriminator classifying a pause: `"human"` (runner-initiated, a human must answer -- the only kind the v0.2 `pauseForHuman` call expressed) and `"crash-recovery"` (engine-initiated, a non-idempotent node crashed mid-run without a resume token). Extensible -- `timeout`/`error`/agent-pause-vs-human-split graduate from fog when a real flow exercises them (post-MVP, with `human-review`). Replaces the v0.2 `pauseForHuman` call: pause is a return status, not a `RunCtx` call.
+_Avoid_: "pause reason" (free text -- the discriminator is typed, not a string), "pause type"
+
+**RunStore**:
+The persistence seam the engine calls, so the `runs/` filesystem backend can be swapped later. A plain TS interface (NOT an Effect service -- one adapter means a hypothetical seam). Keyed by `(runId, nodeId, pathId)` -- `pathId` is load-bearing in the key (a feedback re-entry is same `nodeId`, new `pathId`). `createRun` writes the flow snapshot + initial state atomically. Sync write after each transition is the ENGINE's policy (it awaits before firing the next), not the store's -- keeping the interface shallow. The filesystem backend is a separate ticket.
+_Avoid_: "run repository", "state store" (too generic), "runs directory" (that's the fs backend, not the interface)
+
+**PathId** (refined):
+The identifier of a **path** -- an execution lane. A **branch**'s selected port opens a NEW pathId (correlates streamed chunks to the chosen route, scopes aborts to a path); an **action** node CONTINUES its parent's pathId (no split). For the MVP, the gate's on-failure feedback opens a new pathId per loop iteration. The exact format/derivation (UUID / hierarchical / counter) is fogged -- it's an opaque string the engine mints.
+_Avoid_: "branchId" (collides with git **branch**), "routeId", "laneId"
+
+**Caller abort** vs **Race abort**:
+Two abort sources, same mechanism (abort a node's composite `ctx.signal`), MUST NOT be conflated. A **caller abort** aborts `RunOpts.signal` -- scopes to the whole run, flow outcome `aborted` (terminal), `FlowRunResult.abortReason` carries `signal.reason` verbatim. A **race abort** is engine-initiated when a `merge: "race"` winner completes -- scopes to sibling paths of that merge only, the flow CONTINUES (winner path proceeds). Both set the killed node's status to `"aborted"` (distinct from `"skipped"`); the flow-level status distinguishes them.
+_Avoid_: conflating the two, "cancellation" (overloaded), "kill" (too low-level -- the runner forwards the signal, Sandcastle does the killing)
