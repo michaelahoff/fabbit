@@ -244,8 +244,12 @@ _Avoid_: "branchId" (collides with git **branch**), "routeId", "laneId"
 The structural role a **node** plays in edge fan, independent of what its runner does (determinism, IO vs pure compute). Three classes, distinguished by in-degree/out-degree and how outputs select. The class is structural, encoded as a discriminated union in the schema; runner-implementation concerns (pure function, agent-driven, deterministic) belong on the runner, not the class.
 - **action** -- exactly one input, exactly one output.
 - **branch** -- exactly one input, N outputs, exactly one output fires per invocation (the runner selects a downstream).
-- **merge** -- N inputs (a required `join`), exactly one output. Owns fan-in.
-_Avoid_: subdividing by determinism ("logic node", "transform node") -- pure computation is an action whose runner happens to be deterministic; "scatter node" -- fan-out is an action feeding a branch, not its own class; "routing" as a single class -- the gate-vs-merge distinction is structural, one selects and the other combines.
+- **merge** -- N inputs (a join), exactly one output. Owns fan-in. The join policy (`all` / `race`) is kind-level -- it lives on the **registry entry**, not the node record.
+_Avoid_: subdividing by determinism ("logic node", "transform node") -- pure computation is an action whose runner happens to be deterministic; "scatter node" -- a fourth structural class (one input, ALL N outputs fire), deferred to fog alongside merge; the prior dismissal ("fan-out is an action feeding a branch") was wrong -- an action has exactly one output edge and a branch selects one, so neither can fan out to all; "routing" as a single class -- the gate-vs-merge distinction is structural, one selects and the other combines.
+
+**Registry entry**:
+The typed/behavioral contract that a **node**'s `kind`+`version` resolves to at engine load -- the counterpart the transport **flow** schema deliberately leaves untyped ("DAG is data, not code"). Owns `cls` (validated against the node), `outputPorts` (port -> field names), `inputFields` (the node's input shape, for identity-wiring validation), `paramSchema` (validates `node.params`), `runner` (opaque, typed by the engine ticket), and `join` (present iff `cls: "merge"`). The builder API and engine both code against it.
+_Avoid_: "node definition" (overloaded with the node record), "kind descriptor", "node type" (overloaded with `cls`)
 
 **Feedback edge**:
 An explicit **edge** marked `kind: "feedback"` -- a re-entry from a downstream **node** back to an upstream one (e.g. a **gate**'s on-failure output back to the **agent** node it gates). Carries a runner-produced **resume token** so the engine resumes the upstream rather than re-invoking it cold. The engine bounds iteration per feedback edge (max-loops / progress check); the graph is *not* infinitely recursive. Makes explicit where the loops in a **flow** live; without it the graph is acyclic.
